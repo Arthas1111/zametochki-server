@@ -12,6 +12,7 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
+// ---- Rate limiting ----
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 180,
@@ -27,39 +28,50 @@ const presignLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// CORS лучше ограничивать доменами. Пока оставлю широким, но можно ужесточить.
+// ---- CORS ----
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(cors({
-  origin: (origin, cb) => {
-    // запросы без Origin (curl/postman) — пропускаем
-    if (!origin) return cb(null, true);
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // curl/postman
+      if (allowedOrigins.length === 0) return cb(null, true); // если не настроено — не блокируем
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 
-    // если список не задан — не блокируем (на проде лучше задать)
-    if (allowedOrigins.length === 0) return cb(null, true);
+// обработчик ошибок CORS, чтобы не было “пустой 500”
+app.use((err, req, res, next) => {
+  if (err && err.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "CORS: origin запрещён" });
+  }
+  return next(err);
+});
 
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-}));
+// ---- Firebase Admin init ----
+let firebaseReady = false;
 
-// ===== Firebase Admin init =====
-// В Render/сервере добавь переменную окружения FIREBASE_SERVICE_ACCOUNT_JSON
-// (одной строкой JSON)
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
   console.warn("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON не задан. Auth middleware работать не будет.");
 } else {
   admin.initializeApp({
     credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)),
   });
+  firebaseReady = true;
 }
 
 async function authMiddleware(req, res, next) {
   try {
+    if (!firebaseReady) {
+      return res.status(500).json({ error: "Firebase Admin не настроен на сервере" });
+    }
+
     const hdr = req.headers.authorization || "";
     const m = hdr.match(/^Bearer (.+)$/);
     if (!m) return res.status(401).json({ error: "Нет токена (Authorization: Bearer ...)" });
@@ -72,7 +84,7 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-// ===== S3 config (Beget) =====
+// ---- S3 config (Beget) ----
 AWS.config.update({
   accessKeyId: process.env.S3_ACCESS_KEY,
   secretAccessKey: process.env.S3_SECRET_KEY,
@@ -88,35 +100,38 @@ const BUCKET = process.env.S3_BUCKET;
 function safeFileName(name) {
   return String(name || "file").replace(/[^\w.\-() ]+/g, "_");
 }
+
 const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 
 const ALLOWED_MIME = new Set([
-  // images
-  "image/png", "image/jpeg", "image/webp", "image/gif",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
 
-  // pdf
   "application/pdf",
 
-  // text
   "text/plain",
 
-  // audio
-  "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4",
+  "audio/mpeg",
+  "audio/wav",
+  "audio/ogg",
+  "audio/mp4",
 
-  // doc/docx
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 
-  // xls/xlsx
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 
-  // ppt/pptx
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ]);
 
 function validateUpload({ fileType, fileSize }) {
+  if (!BUCKET) {
+    return { ok: false, status: 500, error: "S3_BUCKET не задан на сервере" };
+  }
   if (!fileType || !ALLOWED_MIME.has(fileType)) {
     return { ok: false, status: 400, error: "Тип файла запрещён" };
   }
@@ -136,12 +151,12 @@ function validateUpload({ fileType, fileSize }) {
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
   try {
     const { fileName, fileType, fileSize } = req.body || {};
-if (!fileName || !fileType) {
-  return res.status(400).json({ error: "Не указано имя или тип файла" });
-}
+    if (!fileName || !fileType) {
+      return res.status(400).json({ error: "Не указано имя или тип файла" });
+    }
 
-const v = validateUpload({ fileType, fileSize });
-if (!v.ok) return res.status(v.status).json({ error: v.error });
+    const v = validateUpload({ fileType, fileSize });
+    if (!v.ok) return res.status(v.status).json({ error: v.error });
 
     const uid = req.user.uid;
     const key = `uploads/${uid}/${Date.now()}-${safeFileName(fileName)}`;
@@ -216,4 +231,3 @@ app.get("/", (req, res) => res.send("✅ Zametochki S3 server работает")
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
-
