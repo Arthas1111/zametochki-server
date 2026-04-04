@@ -12,7 +12,6 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
-// ---- Rate limiting ----
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 180,
@@ -28,7 +27,6 @@ const presignLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ---- CORS ----
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -37,8 +35,8 @@ const allowedOrigins = (process.env.CORS_ORIGINS || "")
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // curl/postman
-      if (allowedOrigins.length === 0) return cb(null, true); // если не настроено — не блокируем
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.length === 0) return cb(null, true);
       if (allowedOrigins.includes(origin)) return cb(null, true);
       return cb(new Error("Not allowed by CORS"));
     },
@@ -46,7 +44,6 @@ app.use(
   })
 );
 
-// обработчик ошибок CORS, чтобы не было “пустой 500”
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     return res.status(403).json({ error: "CORS: origin запрещён" });
@@ -54,11 +51,10 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
-// ---- Firebase Admin init ----
 let firebaseReady = false;
 
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-  console.warn("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON не задан. Auth middleware работать не будет.");
+  console.warn("FIREBASE_SERVICE_ACCOUNT_JSON не задан. Auth middleware работать не будет.");
 } else {
   admin.initializeApp({
     credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)),
@@ -77,14 +73,13 @@ async function authMiddleware(req, res, next) {
     if (!m) return res.status(401).json({ error: "Нет токена (Authorization: Bearer ...)" });
 
     const decoded = await admin.auth().verifyIdToken(m[1]);
-    req.user = decoded; // { uid, ... }
+    req.user = decoded;
     next();
   } catch (e) {
     return res.status(401).json({ error: "Неверный/просроченный токен" });
   }
 }
 
-// ---- S3 config (Beget) ----
 AWS.config.update({
   accessKeyId: process.env.S3_ACCESS_KEY,
   secretAccessKey: process.env.S3_SECRET_KEY,
@@ -101,29 +96,23 @@ function safeFileName(name) {
   return String(name || "file").replace(/[^\w.\-() ]+/g, "_");
 }
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 
 const ALLOWED_MIME = new Set([
   "image/png",
   "image/jpeg",
   "image/webp",
   "image/gif",
-
   "application/pdf",
-
   "text/plain",
-
   "audio/mpeg",
   "audio/wav",
   "audio/ogg",
   "audio/mp4",
-
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ]);
@@ -147,7 +136,6 @@ function validateUpload({ fileType, fileSize }) {
   return { ok: true };
 }
 
-// 1) presigned URL for upload (PUT)
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
   try {
     const { fileName, fileType, fileSize } = req.body || {};
@@ -176,7 +164,6 @@ app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) 
   }
 });
 
-// 2) presigned URL for download (GET)
 app.get("/get-file-url", authMiddleware, async (req, res) => {
   try {
     const { key } = req.query;
@@ -201,7 +188,6 @@ app.get("/get-file-url", authMiddleware, async (req, res) => {
   }
 });
 
-// 3) delete file
 app.delete("/delete-file", authMiddleware, async (req, res) => {
   try {
     const { key } = req.query;
@@ -226,8 +212,7 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
   }
 });
 
-// health
-app.get("/", (req, res) => res.send("✅ Zametochki S3 server работает"));
+app.get("/", (req, res) => res.send("Zametochki S3 server работает"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
