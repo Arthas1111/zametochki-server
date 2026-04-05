@@ -98,31 +98,9 @@ function safeFileName(name) {
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 
-const ALLOWED_MIME = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
-  "text/plain",
-  "audio/mpeg",
-  "audio/wav",
-  "audio/ogg",
-  "audio/mp4",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-powerpoint",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-]);
-
-function validateUpload({ fileType, fileSize }) {
+function validateUpload({ fileSize }) {
   if (!BUCKET) {
     return { ok: false, status: 500, error: "S3_BUCKET не задан на сервере" };
-  }
-  if (!fileType || !ALLOWED_MIME.has(fileType)) {
-    return { ok: false, status: 400, error: "Тип файла запрещён" };
   }
   if (typeof fileSize !== "number" || !Number.isFinite(fileSize)) {
     return { ok: false, status: 400, error: "Не указан корректный размер файла" };
@@ -143,7 +121,7 @@ app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) 
       return res.status(400).json({ error: "Не указано имя или тип файла" });
     }
 
-    const v = validateUpload({ fileType, fileSize });
+    const v = validateUpload({ fileSize });
     if (!v.ok) return res.status(v.status).json({ error: v.error });
 
     const uid = req.user.uid;
