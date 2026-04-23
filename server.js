@@ -9,7 +9,7 @@ import rateLimit from "express-rate-limit";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(helmet());
 
 const globalLimiter = rateLimit({
@@ -23,6 +23,13 @@ app.use(globalLimiter);
 const presignLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const aiChatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -46,7 +53,7 @@ app.use(
 
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
-    return res.status(403).json({ error: "CORS: origin запрещён" });
+    return res.status(403).json({ error: "CORS: origin запрещен" });
   }
   return next(err);
 });
@@ -76,7 +83,7 @@ async function authMiddleware(req, res, next) {
     req.user = decoded;
     next();
   } catch (e) {
-    return res.status(401).json({ error: "Неверный/просроченный токен" });
+    return res.status(401).json({ error: "Неверный или просроченный токен" });
   }
 }
 
@@ -112,6 +119,19 @@ function validateUpload({ fileSize }) {
     return { ok: false, status: 413, error: "Файл больше 5 ГБ. Это превышает лимит." };
   }
   return { ok: true };
+}
+
+function normalizeChatMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+
+  return messages
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      role: item.role === "assistant" ? "assistant" : "user",
+      content: String(item.content || "").trim(),
+    }))
+    .filter((item) => item.content)
+    .slice(-20);
 }
 
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
@@ -190,7 +210,57 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Zametochki S3 server работает"));
+app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "На сервере не задан DEEPSEEK_API_KEY" });
+    }
+
+    const messages = normalizeChatMessages(req.body?.messages);
+    const systemPrompt =
+      String(req.body?.systemPrompt || "").trim() ||
+      "Ты полезный AI-помощник для приложения заметок. Отвечай на русском языке ясно и по делу.";
+
+    if (!messages.length) {
+      return res.status(400).json({ error: "Пустой запрос к ИИ" });
+    }
+
+    const upstream = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        temperature: 0.7,
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
+      }),
+    });
+
+    const data = await upstream.json().catch(() => ({}));
+
+    if (!upstream.ok) {
+      console.error("DeepSeek API error:", data);
+      return res.status(upstream.status).json({
+        error: data?.error?.message || data?.message || "Ошибка запроса к DeepSeek",
+      });
+    }
+
+    const reply = data?.choices?.[0]?.message?.content?.trim();
+    if (!reply) {
+      return res.status(502).json({ error: "DeepSeek вернул пустой ответ" });
+    }
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("Ошибка AI чата:", err);
+    res.status(500).json({ error: "Не удалось получить ответ от ИИ" });
+  }
+});
+
+app.get("/", (req, res) => res.send("Zametochki server работает"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
