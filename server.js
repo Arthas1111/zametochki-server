@@ -82,7 +82,7 @@ async function authMiddleware(req, res, next) {
     const decoded = await admin.auth().verifyIdToken(m[1]);
     req.user = decoded;
     next();
-  } catch (e) {
+  } catch {
     return res.status(401).json({ error: "Неверный или просроченный токен" });
   }
 }
@@ -98,12 +98,11 @@ AWS.config.update({
 
 const s3 = new AWS.S3();
 const BUCKET = process.env.S3_BUCKET;
+const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 
 function safeFileName(name) {
   return String(name || "file").replace(/[^\w.\-() ]+/g, "_");
 }
-
-const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 
 function validateUpload({ fileSize }) {
   if (!BUCKET) {
@@ -132,6 +131,13 @@ function normalizeChatMessages(messages) {
     }))
     .filter((item) => item.content)
     .slice(-20);
+}
+
+function toGeminiContents(messages) {
+  return messages.map((item) => ({
+    role: item.role === "assistant" ? "model" : "user",
+    parts: [{ text: item.content }],
+  }));
 }
 
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
@@ -212,9 +218,9 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
 
 app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
   try {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "На сервере не задан DEEPSEEK_API_KEY" });
+      return res.status(500).json({ error: "На сервере не задан GEMINI_API_KEY" });
     }
 
     const messages = normalizeChatMessages(req.body?.messages);
@@ -226,31 +232,42 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
       return res.status(400).json({ error: "Пустой запрос к ИИ" });
     }
 
-    const upstream = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        temperature: 0.7,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
-      }),
-    });
+    const upstream = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemPrompt }],
+          },
+          contents: toGeminiContents(messages),
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 2048,
+          },
+        }),
+      }
+    );
 
     const data = await upstream.json().catch(() => ({}));
 
     if (!upstream.ok) {
-      console.error("DeepSeek API error:", data);
+      console.error("Gemini API error:", data);
       return res.status(upstream.status).json({
-        error: data?.error?.message || data?.message || "Ошибка запроса к DeepSeek",
+        error: data?.error?.message || data?.message || "Ошибка запроса к Gemini",
       });
     }
 
-    const reply = data?.choices?.[0]?.message?.content?.trim();
+    const reply = (data?.candidates?.[0]?.content?.parts || [])
+      .map((part) => part?.text || "")
+      .join("")
+      .trim();
+
     if (!reply) {
-      return res.status(502).json({ error: "DeepSeek вернул пустой ответ" });
+      return res.status(502).json({ error: "Gemini вернул пустой ответ" });
     }
 
     res.json({ reply });
