@@ -211,11 +211,11 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
 
 app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
   try {
-    const apiKey = process.env.TENCENT_LKEAP_API_KEY;
-    const baseUrl = (process.env.TENCENT_LKEAP_BASE_URL || "https://api.lkeap.tencentcloud.com/v1").replace(/\/+$/, "");
-    const model = process.env.TENCENT_LKEAP_MODEL || "hy3-preview";
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    const baseUrl = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    const model = process.env.OPENROUTER_MODEL || "tencent/hy3-preview:free";
     if (!apiKey) {
-      return res.status(500).json({ error: "На сервере не задан TENCENT_LKEAP_API_KEY" });
+      return res.status(500).json({ error: "На сервере не задан OPENROUTER_API_KEY" });
     }
 
     const messages = normalizeChatMessages(req.body?.messages);
@@ -232,6 +232,8 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zametochki.online",
+        "X-OpenRouter-Title": process.env.OPENROUTER_APP_NAME || "Zametochki AI",
       },
       body: JSON.stringify({
         model,
@@ -244,16 +246,16 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
     const data = await upstream.json().catch(() => ({}));
 
     if (!upstream.ok) {
-      console.error("Tencent LKEAP API error:", data);
+      console.error("OpenRouter API error:", data);
       return res.status(upstream.status).json({
-        error: data?.error?.message || data?.message || "Ошибка запроса к Tencent API",
+        error: data?.error?.message || data?.message || "Ошибка запроса к OpenRouter",
       });
     }
 
     const reply = data?.choices?.[0]?.message?.content?.trim();
 
     if (!reply) {
-      return res.status(502).json({ error: "Tencent API вернул пустой ответ" });
+      return res.status(502).json({ error: "OpenRouter вернул пустой ответ" });
     }
 
     res.json({ reply });
