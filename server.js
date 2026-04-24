@@ -133,13 +133,6 @@ function normalizeChatMessages(messages) {
     .slice(-20);
 }
 
-function toGeminiContents(messages) {
-  return messages.map((item) => ({
-    role: item.role === "assistant" ? "model" : "user",
-    parts: [{ text: item.content }],
-  }));
-}
-
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
   try {
     const { fileName, fileType, fileSize } = req.body || {};
@@ -218,9 +211,11 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
 
 app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.TENCENT_LKEAP_API_KEY;
+    const baseUrl = (process.env.TENCENT_LKEAP_BASE_URL || "https://api.lkeap.tencentcloud.com/v1").replace(/\/+$/, "");
+    const model = process.env.TENCENT_LKEAP_MODEL || "hy3-preview";
     if (!apiKey) {
-      return res.status(500).json({ error: "На сервере не задан GEMINI_API_KEY" });
+      return res.status(500).json({ error: "На сервере не задан TENCENT_LKEAP_API_KEY" });
     }
 
     const messages = normalizeChatMessages(req.body?.messages);
@@ -232,42 +227,33 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
       return res.status(400).json({ error: "Пустой запрос к ИИ" });
     }
 
-    const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          system_instruction: {
-            parts: [{ text: systemPrompt }],
-          },
-          contents: toGeminiContents(messages),
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 2048,
-          },
-        }),
-      }
-    );
+    const upstream = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        temperature: 0.7,
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
+      }),
+    });
 
     const data = await upstream.json().catch(() => ({}));
 
     if (!upstream.ok) {
-      console.error("Gemini API error:", data);
+      console.error("Tencent LKEAP API error:", data);
       return res.status(upstream.status).json({
-        error: data?.error?.message || data?.message || "Ошибка запроса к Gemini",
+        error: data?.error?.message || data?.message || "Ошибка запроса к Tencent API",
       });
     }
 
-    const reply = (data?.candidates?.[0]?.content?.parts || [])
-      .map((part) => part?.text || "")
-      .join("")
-      .trim();
+    const reply = data?.choices?.[0]?.message?.content?.trim();
 
     if (!reply) {
-      return res.status(502).json({ error: "Gemini вернул пустой ответ" });
+      return res.status(502).json({ error: "Tencent API вернул пустой ответ" });
     }
 
     res.json({ reply });
