@@ -219,9 +219,7 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
     }
 
     const messages = normalizeChatMessages(req.body?.messages);
-    const systemPrompt =
-      String(req.body?.systemPrompt || "").trim() ||
-      "Ты полезный AI-помощник для приложения заметок. Отвечай на русском языке ясно и по делу.";
+    const systemPrompt = String(req.body?.systemPrompt || "").trim();
 
     if (!messages.length) {
       return res.status(400).json({ error: "Пустой запрос к ИИ" });
@@ -239,7 +237,9 @@ app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
         model,
         stream: false,
         temperature: 0.7,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: systemPrompt
+          ? [{ role: "system", content: systemPrompt }, ...messages]
+          : messages,
       }),
     });
 
