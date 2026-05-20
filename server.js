@@ -209,59 +209,57 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
   }
 });
 
-app.post("/ai/chat", authMiddleware, aiChatLimiter, async (req, res) => {
+// ---- AI Chat (DeepSeek via OpenRouter - free) ----
+app.post("/ai-chat", authMiddleware, async (req, res) => {
   try {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    const baseUrl = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-    const model = process.env.OPENROUTER_MODEL || "tencent/hy3-preview:free";
-    if (!apiKey) {
-      return res.status(500).json({ error: "На сервере не задан OPENROUTER_API_KEY" });
+    const { message, history } = req.body || {};
+    if (!message) return res.status(400).json({ error: "Нет сообщения" });
+
+    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+    if (!OPENROUTER_API_KEY) return res.status(500).json({ error: "OPENROUTER_API_KEY не настроен" });
+
+    const messages = [
+      {
+        role: "system",
+        content: "Ты умный ассистент для приложения заметок zametochki.online. Помогай пользователям с их заметками, идеями и задачами. Отвечай на языке пользователя."
+      }
+    ];
+
+    if (Array.isArray(history)) {
+      for (const msg of history) {
+        messages.push({ role: msg.role, content: msg.content });
+      }
     }
 
-    const messages = normalizeChatMessages(req.body?.messages);
-    const systemPrompt = String(req.body?.systemPrompt || "").trim();
+    messages.push({ role: "user", content: message });
 
-    if (!messages.length) {
-      return res.status(400).json({ error: "Пустой запрос к ИИ" });
-    }
-
-    const upstream = await fetch(`${baseUrl}/chat/completions`, {
+    const deepseekRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zametochki.online",
-        "X-OpenRouter-Title": process.env.OPENROUTER_APP_NAME || "Zametochki AI",
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://zametochki.online",
+        "X-Title": "Zametochki",
       },
       body: JSON.stringify({
-        model,
-        stream: false,
-        temperature: 0.7,
-        messages: systemPrompt
-          ? [{ role: "system", content: systemPrompt }, ...messages]
-          : messages,
+        model: "deepseek/deepseek-v3-base:free",
+        messages,
+        max_tokens: 1024,
       }),
     });
 
-    const data = await upstream.json().catch(() => ({}));
-
-    if (!upstream.ok) {
-      console.error("OpenRouter API error:", data);
-      return res.status(upstream.status).json({
-        error: data?.error?.message || data?.message || "Ошибка запроса к OpenRouter",
-      });
+    if (!deepseekRes.ok) {
+      const err = await deepseekRes.json().catch(() => ({}));
+      console.error("DeepSeek error:", err);
+      return res.status(502).json({ error: "Ошибка DeepSeek: " + (err?.error?.message || deepseekRes.status) });
     }
 
-    const reply = data?.choices?.[0]?.message?.content?.trim();
-
-    if (!reply) {
-      return res.status(502).json({ error: "OpenRouter вернул пустой ответ" });
-    }
-
+    const data = await deepseekRes.json();
+    const reply = data?.choices?.[0]?.message?.content || "Нет ответа";
     res.json({ reply });
   } catch (err) {
-    console.error("Ошибка AI чата:", err);
-    res.status(500).json({ error: "Не удалось получить ответ от ИИ" });
+    console.error("AI chat error:", err);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
