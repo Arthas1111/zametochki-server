@@ -120,17 +120,34 @@ function validateUpload({ fileSize }) {
   return { ok: true };
 }
 
-function normalizeChatMessages(messages) {
-  if (!Array.isArray(messages)) return [];
+function normalizeAiRequest(body) {
+  if (Array.isArray(body?.messages)) {
+    return body.messages
+      .filter((msg) => msg && typeof msg === "object")
+      .map((msg) => ({
+        role: msg.role === "assistant" ? "assistant" : msg.role === "system" ? "system" : "user",
+        content: String(msg.content || "").trim(),
+      }))
+      .filter((msg) => msg.content);
+  }
 
-  return messages
-    .filter((item) => item && typeof item === "object")
-    .map((item) => ({
-      role: item.role === "assistant" ? "assistant" : "user",
-      content: String(item.content || "").trim(),
-    }))
-    .filter((item) => item.content)
-    .slice(-20);
+  const messages = [];
+
+  if (Array.isArray(body?.history)) {
+    for (const msg of body.history) {
+      const content = String(msg?.content || "").trim();
+      if (!content) continue;
+      messages.push({
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content,
+      });
+    }
+  }
+
+  const message = String(body?.message || "").trim();
+  if (message) messages.push({ role: "user", content: message });
+
+  return messages;
 }
 
 app.post("/get-presigned-url", authMiddleware, presignLimiter, async (req, res) => {
@@ -209,59 +226,60 @@ app.delete("/delete-file", authMiddleware, async (req, res) => {
   }
 });
 
-// ---- AI Chat (DeepSeek via OpenRouter - free) ----
-app.post("/ai-chat", authMiddleware, async (req, res) => {
+async function handleAiChat(req, res) {
   try {
-    const { message, history } = req.body || {};
-    if (!message) return res.status(400).json({ error: "Нет сообщения" });
-
-    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-    if (!OPENROUTER_API_KEY) return res.status(500).json({ error: "OPENROUTER_API_KEY не настроен" });
-
-    const messages = [
-      {
-        role: "system",
-        content: "Ты умный ассистент для приложения заметок zametochki.online. Помогай пользователям с их заметками, идеями и задачами. Отвечай на языке пользователя."
-      }
-    ];
-
-    if (Array.isArray(history)) {
-      for (const msg of history) {
-        messages.push({ role: msg.role, content: msg.content });
-      }
+    const messages = normalizeAiRequest(req.body || {});
+    if (!messages.length) {
+      return res.status(400).json({ error: "Нет сообщения" });
     }
 
-    messages.push({ role: "user", content: message });
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    const baseUrl = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    const model = process.env.OPENROUTER_MODEL || "deepseek/deepseek-chat-v3-0324:free";
 
-    const deepseekRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    if (!apiKey) {
+      return res.status(500).json({ error: "OPENROUTER_API_KEY не настроен" });
+    }
+
+    const upstream = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://zametochki.online",
-        "X-Title": "Zametochki",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zametochki.online",
+        "X-OpenRouter-Title": process.env.OPENROUTER_APP_NAME || "Zametochki AI",
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-v3-base:free",
+        model,
+        stream: false,
+        temperature: 0.7,
         messages,
-        max_tokens: 1024,
       }),
     });
 
-    if (!deepseekRes.ok) {
-      const err = await deepseekRes.json().catch(() => ({}));
-      console.error("DeepSeek error:", err);
-      return res.status(502).json({ error: "Ошибка DeepSeek: " + (err?.error?.message || deepseekRes.status) });
+    const data = await upstream.json().catch(() => ({}));
+
+    if (!upstream.ok) {
+      console.error("OpenRouter API error:", data);
+      return res.status(upstream.status).json({
+        error: data?.error?.message || data?.message || "Ошибка запроса к OpenRouter",
+      });
     }
 
-    const data = await deepseekRes.json();
-    const reply = data?.choices?.[0]?.message?.content || "Нет ответа";
+    const reply = data?.choices?.[0]?.message?.content?.trim();
+    if (!reply) {
+      return res.status(502).json({ error: "OpenRouter вернул пустой ответ" });
+    }
+
     res.json({ reply });
   } catch (err) {
     console.error("AI chat error:", err);
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
-});
+}
+
+app.post("/ai/chat", authMiddleware, aiChatLimiter, handleAiChat);
+app.post("/ai-chat", authMiddleware, aiChatLimiter, handleAiChat);
 
 app.get("/", (req, res) => res.send("Zametochki server работает"));
 
